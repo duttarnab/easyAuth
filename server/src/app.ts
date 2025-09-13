@@ -4,9 +4,12 @@ import cors from 'cors';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import dotenv from 'dotenv';
+import session from 'express-session';
 
 import authRoutes from './routes/auth';
 import clientRoutes from './routes/clients';
+import userRoutes from './routes/users';
+import { AuthController } from './controllers/authController';
 
 dotenv.config();
 
@@ -22,6 +25,17 @@ app.use(cors({
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+// Session middleware (for storing auth requests)
+app.use(session({
+  secret: process.env.SESSION_SECRET || 'your-session-secret',
+  resave: false,
+  saveUninitialized: false,
+  cookie: { 
+    secure: process.env.NODE_ENV === 'production',
+    maxAge: 15 * 60 * 1000 // 15 minutes
+  }
+}));
+
 // Rate limiting
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
@@ -32,6 +46,7 @@ app.use(limiter);
 // Routes
 app.use('/oauth', authRoutes);
 app.use('/api/clients', clientRoutes);
+app.use('/api/users', userRoutes);
 
 // Health check
 app.get('/health', (req, res) => {
@@ -41,15 +56,25 @@ app.get('/health', (req, res) => {
 // Error handling middleware
 app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
   console.error(err.stack);
-  res.status(500).json({ error: 'Something went wrong!' });
+  res.status(500).json({ error: 'server_error', error_description: 'Something went wrong!' });
 });
 
-// Connect to MongoDB
+// Connect to MongoDB and initialize
 mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/oauth-server')
-  .then(() => {
+  .then(async () => {
     console.log('Connected to MongoDB');
+    
+    // Initialize signing key if none exists
+    try {
+      await AuthController.getSigningKey();
+      console.log('Signing key initialized');
+    } catch (error) {
+      console.error('Failed to initialize signing key:', error);
+    }
+    
     app.listen(PORT, () => {
-      console.log(`OAuth server running on port ${PORT}`);
+      console.log(`OpenID Connect provider running on port ${PORT}`);
+      console.log(`Discovery endpoint: http://localhost:${PORT}/oauth/.well-known/openid-configuration`);
     });
   })
   .catch((error) => {

@@ -2,6 +2,7 @@ import mongoose, { Document, Schema } from 'mongoose';
 
 export interface IToken extends Document {
   accessToken: string;
+  idToken: string;
   accessTokenExpiresAt: Date;
   refreshToken: string;
   refreshTokenExpiresAt: Date;
@@ -13,6 +14,11 @@ export interface IToken extends Document {
 
 const TokenSchema: Schema = new Schema({
   accessToken: {
+    type: String,
+    required: true,
+    unique: true
+  },
+  idToken: {
     type: String,
     required: true,
     unique: true
