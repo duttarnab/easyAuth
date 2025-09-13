@@ -17,7 +17,9 @@ export class AuthController {
   // Generate RSA key pair for signing
   static async generateKeyPair() {
     try {
-      const { publicKey, privateKey } = await jose.generateKeyPair('RS256');
+      const { publicKey, privateKey } = await jose.generateKeyPair('RS256', {
+        extractable: true
+      });
       
       const publicKeyJwk = await jose.exportJWK(publicKey);
       const privateKeyJwk = await jose.exportJWK(privateKey);
@@ -133,10 +135,15 @@ export class AuthController {
     // Handle different authorization methods
     switch (authorization_method) {
       case 'basic':
-        // Redirect to login UI for username/password authentication
-        // In a real app, you'd redirect to your login page
-        const loginUrl = `${process.env.UI_BASE_URL || 'http://localhost:3001'}/login?auth_request_id=${authRequestId}`;
-        return res.redirect(loginUrl);
+        // Render login template for username/password authentication
+        return res.render('auth/login', {
+          authRequestId,
+          clientInfo: {
+            clientId: client_id,
+            scopes: scopes,
+            redirectUri: redirect_uri
+          }
+        });
 
       case 'sso':
         // Redirect to SSO provider
@@ -220,6 +227,11 @@ static async completeAuthentication(req: Request, res: Response) {
     const redirectUrl = new URL(authRequest.redirect_uri);
     redirectUrl.searchParams.set('code', code);
     if (authRequest.state) redirectUrl.searchParams.set('state', authRequest.state);
+
+    // Check if this is a form submission (has content-type header)
+    if (req.headers['content-type']?.includes('application/x-www-form-urlencoded')) {
+      return res.redirect(redirectUrl.toString());
+    }
 
     return res.json({ 
       redirect_uri: redirectUrl.toString(),
@@ -489,6 +501,8 @@ static async completeAuthentication(req: Request, res: Response) {
         token_endpoint: `${ISSUER}/oauth/token`,
         userinfo_endpoint: `${ISSUER}/oauth/userinfo`,
         jwks_uri: `${ISSUER}/oauth/jwks`,
+        end_session_endpoint: `${ISSUER}/oauth/logout`,
+        revocation_endpoint: `${ISSUER}/oauth/revoke`,
         scopes_supported: ['openid', 'profile', 'email', 'offline_access'],
         response_types_supported: ['code'],
         grant_types_supported: ['authorization_code', 'refresh_token'],
@@ -563,6 +577,53 @@ static async login(req: Request, res: Response) {
   }
 }
 
+// Login form endpoint (for template-based login)
+static async loginForm(req: Request, res: Response) {
+  try {
+    const { email, password, auth_request_id } = req.body;
+
+    if (!email || !password || !auth_request_id) {
+      return res.render('auth/login', {
+        error: 'Email, password, and auth request ID are required',
+        authRequestId: auth_request_id,
+        clientInfo: null
+      });
+    }
+
+    const user = await User.findOne({ email });
+    if (!user) {
+      return res.render('auth/login', {
+        error: 'Invalid email or password',
+        authRequestId: auth_request_id,
+        clientInfo: null
+      });
+    }
+
+    const isPasswordValid = await user.comparePassword(password);
+    if (!isPasswordValid) {
+      return res.render('auth/login', {
+        error: 'Invalid email or password',
+        authRequestId: auth_request_id,
+        clientInfo: null
+      });
+    }
+
+    // Complete the authentication process
+    return await AuthController.completeAuthentication({
+      ...req,
+      body: { auth_request_id, user_id: user._id }
+    } as Request, res);
+
+  } catch (error) {
+    console.error('Login form error:', error);
+    return res.render('auth/login', {
+      error: 'An error occurred during login',
+      authRequestId: req.body.auth_request_id,
+      clientInfo: null
+    });
+  }
+}
+
 // Verify session token
 static async verifySession(req: Request, res: Response) {
   try {
@@ -599,6 +660,213 @@ static async verifySession(req: Request, res: Response) {
     return res.status(401).json({ 
       error: 'invalid_token', 
       error_description: 'Invalid or expired token' 
+    });
+  }
+}
+
+// Initiate logout (OIDC Logout)
+static async initiateLogout(req: Request, res: Response) {
+  try {
+    const { 
+      post_logout_redirect_uri, 
+      id_token_hint, 
+      client_id,
+      state 
+    } = req.query;
+
+    // Validate required parameters
+    if (!post_logout_redirect_uri) {
+      return res.status(400).json({ 
+        error: 'invalid_request', 
+        error_description: 'post_logout_redirect_uri is required' 
+      });
+    }
+
+    let client = null;
+    let user = null;
+
+    // If client_id is provided, validate it
+    if (client_id) {
+      client = await Client.findOne({ clientId: client_id });
+      if (!client) {
+        return res.status(400).json({ 
+          error: 'invalid_client', 
+          error_description: 'Invalid client' 
+        });
+      }
+
+      // Validate redirect URI
+      if (!client.redirectUris.includes(post_logout_redirect_uri as string)) {
+        return res.status(400).json({ 
+          error: 'invalid_request', 
+          error_description: 'Invalid post_logout_redirect_uri' 
+        });
+      }
+    }
+
+    // If id_token_hint is provided, extract user info
+    if (id_token_hint) {
+      try {
+        const decoded = jwt.verify(id_token_hint as string, JWT_SECRET) as any;
+        user = await User.findById(decoded.sub).select('-password');
+      } catch (error) {
+        // Invalid token, but we can still proceed with logout
+        console.warn('Invalid id_token_hint provided:', error);
+      }
+    }
+
+    // Generate logout token for confirmation
+    const logoutToken = uuidv4();
+    
+    // Store logout request in session
+    (req as any).session = (req as any).session || {};
+    (req as any).session.logoutRequests = (req as any).session.logoutRequests || {};
+    (req as any).session.logoutRequests[logoutToken] = {
+      post_logout_redirect_uri,
+      client_id,
+      state,
+      createdAt: new Date()
+    };
+
+    // Render logout confirmation page
+    return res.render('auth/logout', {
+      logoutToken,
+      postLogoutRedirectUri: post_logout_redirect_uri,
+      clientInfo: client ? {
+        clientId: client.clientId,
+        name: client.name
+      } : null,
+      error: null
+    });
+
+  } catch (error) {
+    console.error('Initiate logout error:', error);
+    return res.status(500).json({ 
+      error: 'server_error', 
+      error_description: 'Internal server error' 
+    });
+  }
+}
+
+// Confirm logout
+static async confirmLogout(req: Request, res: Response) {
+  try {
+    const { logout_token } = req.body;
+
+    if (!logout_token) {
+      return res.status(400).json({ 
+        error: 'invalid_request', 
+        error_description: 'logout_token is required' 
+      });
+    }
+
+    // Retrieve logout request from session
+    const logoutRequest = (req as any).session?.logoutRequests?.[logout_token];
+    if (!logoutRequest) {
+      return res.status(400).json({ 
+        error: 'invalid_request', 
+        error_description: 'Invalid logout request' 
+      });
+    }
+
+    // Revoke all active tokens for the user (if we can identify them)
+    // Note: In a real implementation, you'd need to identify the user from the session
+    // or from the id_token_hint that was provided during logout initiation
+    
+    // Clean up logout request
+    delete (req as any).session.logoutRequests[logout_token];
+
+    // Redirect to post-logout redirect URI
+    const redirectUrl = new URL(logoutRequest.post_logout_redirect_uri);
+    if (logoutRequest.state) {
+      redirectUrl.searchParams.set('state', logoutRequest.state);
+    }
+
+    return res.redirect(redirectUrl.toString());
+
+  } catch (error) {
+    console.error('Confirm logout error:', error);
+    return res.status(500).json({ 
+      error: 'server_error', 
+      error_description: 'Internal server error' 
+    });
+  }
+}
+
+// Revoke tokens
+static async revokeTokens(req: Request, res: Response) {
+  try {
+    const { token, token_type_hint } = req.body;
+
+    if (!token) {
+      return res.status(400).json({ 
+        error: 'invalid_request', 
+        error_description: 'token is required' 
+      });
+    }
+
+    let deletedCount = 0;
+
+    // Try to revoke access token
+    if (!token_type_hint || token_type_hint === 'access_token') {
+      const accessTokenResult = await Token.deleteOne({ accessToken: token });
+      deletedCount += accessTokenResult.deletedCount;
+    }
+
+    // Try to revoke refresh token
+    if (!token_type_hint || token_type_hint === 'refresh_token') {
+      const refreshTokenResult = await Token.deleteOne({ refreshToken: token });
+      deletedCount += refreshTokenResult.deletedCount;
+    }
+
+    // Always return 200 for security reasons (don't reveal if token existed)
+    return res.status(200).json({ 
+      message: 'Token revoked successfully' 
+    });
+
+  } catch (error) {
+    console.error('Revoke tokens error:', error);
+    return res.status(500).json({ 
+      error: 'server_error', 
+      error_description: 'Internal server error' 
+    });
+  }
+}
+
+// End session (OIDC End Session)
+static async endSession(req: Request, res: Response) {
+  try {
+    const { 
+      post_logout_redirect_uri, 
+      id_token_hint, 
+      client_id,
+      state 
+    } = req.query;
+
+    // This is a simplified end session that just redirects
+    // In a real implementation, you'd want to revoke tokens and clear sessions
+    
+    if (post_logout_redirect_uri) {
+      const redirectUrl = new URL(post_logout_redirect_uri as string);
+      if (state) {
+        redirectUrl.searchParams.set('state', state as string);
+      }
+      return res.redirect(redirectUrl.toString());
+    }
+
+    // If no redirect URI, show a simple logout confirmation
+    return res.render('auth/logout', {
+      logoutToken: null,
+      postLogoutRedirectUri: null,
+      clientInfo: null,
+      error: 'You have been logged out successfully.'
+    });
+
+  } catch (error) {
+    console.error('End session error:', error);
+    return res.status(500).json({ 
+      error: 'server_error', 
+      error_description: 'Internal server error' 
     });
   }
 }

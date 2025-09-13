@@ -15,7 +15,14 @@ router.get('/jwks', AuthController.jwks);
 
 // Authentication endpoints
 router.post('/login', AuthController.login);
+router.post('/login-form', AuthController.loginForm);
 router.get('/verify-session', AuthController.verifySession);
 router.post('/complete-auth', AuthController.completeAuthentication);
+
+// Logout endpoints
+router.get('/logout', AuthController.initiateLogout);
+router.post('/logout', AuthController.confirmLogout);
+router.post('/revoke', AuthController.revokeTokens);
+router.get('/end-session', AuthController.endSession);
 
 export default router;
