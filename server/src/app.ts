@@ -39,7 +39,7 @@ async function initializeDefaultData() {
     }
 
     // Create default client if none exists
-    const existingClient =  await Client.find({ clientId: { $exists: true } }); //await Client.findOne({ clientId: 'default-client' });
+    const existingClient =   await Client.findOne({ clientId: 'default-client' }); //await Client.find({ clientId: { $exists: true } });
     if (!existingClient) {
       const defaultClient = new Client({
         //clientId: 'default-client',

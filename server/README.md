@@ -85,6 +85,31 @@ UI_BASE_URL=http://localhost:3001
 SESSION_SECRET=your-session-secret
 ```
 
+## Docker (Server + MongoDB in one container)
+
+Build and run:
+```bash
+cd server
+# Build image
+docker build -t easyauth-server .
+# Run: exposes app on 3000 and MongoDB on 27017
+docker run --rm -p 3000:3000 -p 27017:27017 --name easyauth easyauth-server
+```
+
+Override environment variables at runtime if needed:
+```bash
+docker run --rm -p 3000:3000 -p 27017:27017 \
+  -e MONGODB_URI=mongodb://127.0.0.1:27017/oauth-server \
+  -e CLIENT_URL=http://localhost:3001 \
+  -e UI_BASE_URL=http://localhost:3001 \
+  -e SESSION_SECRET=change-me \
+  easyauth-server
+```
+
+Notes:
+- MongoDB runs inside the container and is exposed on `27017` by the port mapping.
+- Data is ephemeral by default. For persistence, mount a volume to `/data/db` and update `MONGODB_URI` accordingly if you externalize Mongo.
+
 ## API Documentation
 
 ### Base URL

@@ -38,3 +38,23 @@ Flow:
 - React posts the code to backend /auth/exchange
 - Backend exchanges code for tokens and sets HTTP-only cookie
 - React calls backend /api/me to get the profile
+
+## Docker (examples)
+
+Build and run combined examples image (backend + static web):
+```
+# From repo root
+# Provide VITE_CLIENT_ID at build time for the web bundle
+docker build -f examples/Dockerfile -t easyauth-examples --build-arg VITE_CLIENT_ID=your_client_id .
+
+# Run and expose ports 3001 (web) and 3002 (backend)
+docker run --rm -p 3001:3001 -p 3002:3002 \
+  -e ISSUER=http://host.docker.internal:3000 \
+  -e CLIENT_ID=your_client_id \
+  -e CLIENT_SECRET=your_client_secret \
+  -e REDIRECT_URI=http://localhost:3001/callback \
+  easyauth-examples
+```
+Notes:
+- On Mac/Windows, `host.docker.internal` lets the container reach the server at port 3000 on your host.
+- On Linux, replace with your host IP or run the server in Docker and network them together.
