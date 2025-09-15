@@ -6,7 +6,8 @@ const router = Router();
 
 // OAuth endpoints
 router.get('/authorize', optionalAuth, AuthController.authorize);
-router.post('/token', AuthController.token);
+router.post('/token', AuthController.token); // RFC 6749
+router.post('/introspect', AuthController.introspect); // RFC 7662
 router.get('/userinfo', authenticateToken, AuthController.userInfo);
 
 // OIDC endpoints
@@ -22,7 +23,7 @@ router.post('/complete-auth', AuthController.completeAuthentication);
 // Logout endpoints
 router.get('/logout', AuthController.initiateLogout);
 router.post('/logout', AuthController.confirmLogout);
-router.post('/revoke', AuthController.revokeTokens);
+router.post('/revoke', AuthController.revokeTokens); // RFC 7009
 router.get('/end-session', AuthController.endSession);
 
 export default router;

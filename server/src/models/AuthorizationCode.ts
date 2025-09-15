@@ -1,12 +1,16 @@
-import mongoose, { Document, Schema } from 'mongoose';
+import mongoose, { Document, Schema, Types } from 'mongoose';
 
 export interface IAuthorizationCode extends Document {
   code: string;
   expiresAt: Date;
   redirectUri: string;
   scope?: string[];
-  client: mongoose.Types.ObjectId;
-  user: mongoose.Types.ObjectId;
+  // During queries we often populate these refs; reflect that in types
+  client: Types.ObjectId | { clientId: string };
+  user: Types.ObjectId | { _id: Types.ObjectId };
+  // OIDC additions
+  nonce?: string;
+  authTime?: Date;
   createdAt: Date;
 }
 
@@ -36,6 +40,12 @@ const AuthorizationCodeSchema: Schema = new Schema({
     type: Schema.Types.ObjectId,
     ref: 'User',
     required: true
+  },
+  nonce: {
+    type: String
+  },
+  authTime: {
+    type: Date
   }
 }, {
   timestamps: true

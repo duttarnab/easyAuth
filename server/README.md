@@ -33,6 +33,12 @@ cd easyAuth/server
 # Install dependencies
 npm install
 
+# Windows PowerShell users: if npm scripts are blocked by ExecutionPolicy
+# either use cmd.exe (recommended)
+#   cmd /c "npm run build"
+# or temporarily bypass for this session:
+#   Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+
 # Set up environment variables
 cp .env.example .env
 # Edit .env with your configuration
@@ -46,6 +52,15 @@ npm start
 # Or run in development mode
 npm run dev
 ```
+
+### Default Seed Data
+
+
+- **Default client**: created on first start with generated `clientId`/`clientSecret`.
+  - Redirect URIs: `http://localhost:3001/callback`, `http://localhost:3000/callback`
+  - Grants: `authorization_code`, `refresh_token`
+  - Scopes: `openid`, `profile`, `email`
+  - Inspect values in your MongoDB `clients` collection.
 
 ### Environment Variables
 
@@ -113,6 +128,7 @@ curl "http://localhost:3000/oauth/authorize?client_id=my-client&redirect_uri=htt
 ```http
 POST /oauth/token
 Content-Type: application/json
+Authorization: Basic base64(client_id:client_secret)  # or send in body
 ```
 
 **Request Body:**
@@ -142,6 +158,7 @@ Content-Type: application/json
 ```http
 POST /oauth/token
 Content-Type: application/json
+Authorization: Basic base64(client_id:client_secret)  # optional if sent in body
 ```
 
 **Request Body:**
@@ -179,7 +196,45 @@ Authorization: Bearer <access_token>
 
 ---
 
-### 4. Logout Endpoints
+### 4. Introspection Endpoint (RFC 7662)
+
+```http
+POST /oauth/introspect
+Content-Type: application/json
+Authorization: Basic base64(client_id:client_secret)
+```
+
+**Request Body:**
+```json
+{
+  "token": "<access_or_refresh_token>",
+  "token_type_hint": "access_token"
+}
+```
+
+**Response (active):**
+```json
+{
+  "active": true,
+  "client_id": "your_client_id",
+  "exp": 1712345678,
+  "iat": 1712342078,
+  "sub": "user_id",
+  "iss": "http://localhost:3000",
+  "token_type": "access_token",
+  "scope": "openid profile email",
+  "auth_time": 1712342000
+}
+```
+
+**Response (inactive):**
+```json
+{ "active": false }
+```
+
+---
+
+### 5. Logout Endpoints
 
 **Initiate Logout (OIDC)**
 ```http
@@ -212,7 +267,7 @@ GET /oauth/end-session?post_logout_redirect_uri=https://client.com/logout
 
 ---
 
-### 5. OIDC Discovery & JWKS
+### 6. OIDC Discovery & JWKS
 
 **OpenID Connect Discovery**
 ```http
@@ -234,7 +289,7 @@ GET /oauth/.well-known/openid-configuration
   "grant_types_supported": ["authorization_code", "refresh_token"],
   "subject_types_supported": ["public"],
   "id_token_signing_alg_values_supported": ["RS256"],
-  "token_endpoint_auth_methods_supported": ["client_secret_post"],
+  "token_endpoint_auth_methods_supported": ["client_secret_basic", "client_secret_post"],
   "claims_supported": ["sub", "name", "given_name", "family_name", "email", "email_verified"]
 }
 ```

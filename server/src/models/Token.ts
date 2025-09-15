@@ -1,24 +1,24 @@
-import mongoose, { Document, Schema } from 'mongoose';
+import mongoose, { Document, Schema, Types } from 'mongoose';
 
 export interface IToken extends Document {
   accessToken: string;
-  idToken: string;
   accessTokenExpiresAt: Date;
-  refreshToken: string;
-  refreshTokenExpiresAt: Date;
+  refreshToken?: string;
+  refreshTokenExpiresAt?: Date;
+  idToken: string; // Required for OIDC
   scope?: string[];
-  client: mongoose.Types.ObjectId;
-  user: mongoose.Types.ObjectId;
+  // During queries we often populate these refs; reflect that in types
+  client: Types.ObjectId | { clientId: string; _id?: Types.ObjectId };
+  user: Types.ObjectId | { _id: Types.ObjectId };
+  nonce?: string; // Required for OIDC id_token validation
+  authTime: Date; // Time of authentication
+  acr?: string; // Authentication Context Class Reference
+  amr?: string[]; // Authentication Methods References
   createdAt: Date;
 }
 
 const TokenSchema: Schema = new Schema({
   accessToken: {
-    type: String,
-    required: true,
-    unique: true
-  },
-  idToken: {
     type: String,
     required: true,
     unique: true
@@ -29,12 +29,16 @@ const TokenSchema: Schema = new Schema({
   },
   refreshToken: {
     type: String,
-    required: true,
-    unique: true
+    unique: true,
+    sparse: true // Allows null values but enforces uniqueness for non-null
   },
   refreshTokenExpiresAt: {
-    type: Date,
-    required: true
+    type: Date
+  },
+  idToken: {
+    type: String,
+    required: true,
+    unique: true
   },
   scope: [{
     type: String
@@ -48,7 +52,21 @@ const TokenSchema: Schema = new Schema({
     type: Schema.Types.ObjectId,
     ref: 'User',
     required: true
-  }
+  },
+  nonce: {
+    type: String
+  },
+  authTime: {
+    type: Date,
+    required: true,
+    default: Date.now
+  },
+  acr: {
+    type: String
+  },
+  amr: [{
+    type: String
+  }]
 }, {
   timestamps: true
 });

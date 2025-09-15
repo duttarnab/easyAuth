@@ -229,9 +229,9 @@ static async completeAuthentication(req: Request, res: Response) {
     if (authRequest.state) redirectUrl.searchParams.set('state', authRequest.state);
 
     // Check if this is a form submission (has content-type header)
-    if (req.headers['content-type']?.includes('application/x-www-form-urlencoded')) {
+    //if (req.headers['content-type']?.includes('application/x-www-form-urlencoded')) {
       return res.redirect(redirectUrl.toString());
-    }
+    //}
 
     return res.json({ 
       redirect_uri: redirectUrl.toString(),
@@ -246,195 +246,507 @@ static async completeAuthentication(req: Request, res: Response) {
     });
   }
 }
-
-  // Token endpoint (updated for OIDC)
+  // OIDC Compliant Token Endpoint
   static async token(req: Request, res: Response) {
     try {
       const { grant_type, code, redirect_uri, client_id, client_secret, refresh_token } = req.body;
 
+      // Validate required parameters
       if (!grant_type) {
-        return res.status(400).json({ error: 'invalid_request', error_description: 'Invalid grant type' });
-      }
-
-      const client = await Client.findOne({ clientId: client_id });
-      if (!client || client.clientSecret !== client_secret) {
-        return res.status(401).json({ error: 'invalid_client', error_description: 'Invalid client credentials' });
-      }
-
-      if (grant_type === 'authorization_code') {
-        if (!code || !redirect_uri) {
-          return res.status(400).json({ error: 'invalid_request', error_description: 'Invalid request' });
-        }
-
-        const authorizationCode = await AuthorizationCode.findOne({ code })
-          .populate('client user');
-        
-        if (!authorizationCode || authorizationCode.expiresAt < new Date()) {
-          return res.status(400).json({ error: 'invalid_grant', error_description: 'Invalid or expired authorization code' });
-        }
-
-        if (authorizationCode.redirectUri !== redirect_uri) {
-          return res.status(400).json({ error: 'invalid_request', error_description: 'Invalid redirect URI' });
-        }
-
-        // Generate tokens
-        const accessToken = jwt.sign(
-          { 
-            sub: authorizationCode.user._id,
-            client_id: client_id,
-            scope: authorizationCode.scope,
-            iss: ISSUER,
-            aud: client_id
-          },
-          JWT_SECRET,
-          { expiresIn: '1h' }
-        );
-
-        const refreshToken = jwt.sign(
-          { 
-            sub: authorizationCode.user._id,
-            client_id: client_id
-          },
-          JWT_REFRESH_SECRET,
-          { expiresIn: '7d' }
-        );
-
-        // Generate ID Token
-        const signingKey = await AuthController.getSigningKey();
-        const privateKey = await jose.importJWK(JSON.parse(signingKey.privateKey), 'RS256');
-        
-        const idToken = await new jose.SignJWT({
-          sub: authorizationCode.user._id.toString()
-          //name: authorizationCode.user.name,
-          //email: authorizationCode.user.email,
-          //email_verified: authorizationCode.user.isVerified
-        })
-          .setProtectedHeader({ alg: 'RS256', kid: signingKey.kid })
-          .setIssuer(ISSUER)
-          .setAudience(client_id)
-          .setIssuedAt()
-          .setExpirationTime('1h')
-          .setSubject(authorizationCode.user._id.toString())
-          .sign(privateKey);
-
-        const accessTokenExpiresAt = new Date(Date.now() + 60 * 60 * 1000); // 1 hour
-        const refreshTokenExpiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 days
-
-        //const scopes = authorizationCode.scope.join(' ')
-        
-        // Save tokens
-        const token = new Token({
-          accessToken,
-          accessTokenExpiresAt,
-          refreshToken,
-          refreshTokenExpiresAt,
-          idToken,
-          scope: authorizationCode.scope,
-          client: client._id,
-          user: authorizationCode.user._id
+        return res.status(400).json({ 
+          error: 'invalid_request',
+          error_description: 'grant_type parameter is required' 
         });
+      }
 
+      // Client authentication (RFC 6749 Section 2.3.1)
+      let client: any;
+      if (req.headers.authorization && req.headers.authorization.startsWith('Basic ')) {
+        // Basic authentication
+        const base64Credentials = req.headers.authorization.split(' ')[1];
+        const credentials = Buffer.from(base64Credentials, 'base64').toString('ascii');
+        const [providedClientId, providedClientSecret] = credentials.split(':');
         
+        client = await Client.findOne({ 
+          clientId: providedClientId, 
+          clientSecret: providedClientSecret 
+        });
+      } else if (client_id && client_secret) {
+        // POST body authentication
+        client = await Client.findOne({ 
+          clientId: client_id, 
+          clientSecret: client_secret 
+        });
+      }
 
-        await token.save();
-        await AuthorizationCode.deleteOne({ code });
+      if (!client) {
+        return res.status(401).json({ 
+          error: 'invalid_client',
+          error_description: 'Client authentication failed' 
+        });
+      }
 
-        const response: any = {
-          access_token: accessToken,
-          token_type: 'Bearer',
-          expires_in: 3600,
-          refresh_token: refreshToken,
-          id_token: idToken,
-          scope:  authorizationCode.scope?.join(' ')
-        };
-
-        return res.json(response);
-
-      } else if (grant_type === 'refresh_token') {
-        if (!refresh_token) {
-          return res.status(400).json({ error: 'invalid_request', error_description: 'Refresh token required' });
-        }
-
-        try {
-          const decoded = jwt.verify(refresh_token, JWT_REFRESH_SECRET) as any;
-          const existingToken = await Token.findOne({ refreshToken: refresh_token });
-
-          if (!existingToken) {
-            return res.status(401).json({ error: 'invalid_grant', error_description: 'Invalid refresh token' });
-          }
-
-          // Generate new access token
-          const newAccessToken = jwt.sign(
-            { 
-              sub: decoded.sub,
-              client_id: client_id,
-              scope: existingToken.scope,
-              iss: ISSUER,
-              aud: client_id
-            },
-            JWT_SECRET,
-            { expiresIn: '1h' }
-          );
-
-          // Generate new ID token if openid scope is present
-          let newIdToken;
-          if (existingToken.scope?.includes('openid')) {
-            const user = await User.findById(decoded.sub);
-            if (user) {
-              const signingKey = await AuthController.getSigningKey();
-              const privateKey = await jose.importJWK(JSON.parse(signingKey.privateKey), 'RS256');
-              const userIdAsString: string = (user._id as Types.ObjectId).toString();
-
-              newIdToken = await new jose.SignJWT({
-                sub: userIdAsString,
-                name: user.name,
-                email: user.email,
-                email_verified: user.isVerified
-              })
-                .setProtectedHeader({ alg: 'RS256', kid: signingKey.kid })
-                .setIssuer(ISSUER)
-                .setAudience(client_id)
-                .setIssuedAt()
-                .setExpirationTime('1h')
-                .setSubject(userIdAsString)
-                .sign(privateKey);
-            }
-          }
-
-          const accessTokenExpiresAt = new Date(Date.now() + 60 * 60 * 1000);
-
-          existingToken.accessToken = newAccessToken;
-          existingToken.accessTokenExpiresAt = accessTokenExpiresAt;
-          if (newIdToken) {
-            existingToken.idToken = newIdToken;
-          }
-          await existingToken.save();
-
-          const response: any = {
-            access_token: newAccessToken,
-            token_type: 'Bearer',
-            expires_in: 3600,
-            refresh_token: refresh_token,
-            scope: existingToken.scope?.join(' ')
-          };
-
-          if (newIdToken) {
-            response.id_token = newIdToken;
-          }
-
-          return res.json(response);
-
-        } catch (error) {
-          return res.status(401).json({ error: 'invalid_grant', error_description: 'Invalid refresh token' });
-        }
-      } else {
-        return res.status(400).json({ error: 'unsupported_grant_type', error_description: 'Unsupported grant type' });
+      // Handle different grant types
+      switch (grant_type) {
+        case 'authorization_code':
+          return await AuthController.handleAuthorizationCodeGrant(req, res, client);
+        
+        case 'refresh_token':
+          return await AuthController.handleRefreshTokenGrant(req, res, client);
+        
+        default:
+          return res.status(400).json({ 
+            error: 'unsupported_grant_type',
+            error_description: `Grant type ${grant_type} is not supported` 
+          });
       }
     } catch (error) {
-      console.error('Token error:', error);
-      return res.status(500).json({ error: 'server_error', error_description: 'Internal server error' });
+      console.error('Token endpoint error:', error);
+      return res.status(500).json({ 
+        error: 'server_error',
+        error_description: 'Internal server error' 
+      });
     }
   }
+
+  // Handle Authorization Code Grant (RFC 6749 Section 4.1.3)
+  private static async handleAuthorizationCodeGrant(req: Request, res: Response, client: any) {
+    console.log('Inside handleAuthorizationCodeGrant ...');
+    const { code, redirect_uri } = req.body;
+
+    if (!code) {
+      return res.status(400).json({ 
+        error: 'invalid_request',
+        error_description: 'code parameter is required' 
+      });
+    }
+
+    if (!redirect_uri) {
+      return res.status(400).json({ 
+        error: 'invalid_request',
+        error_description: 'redirect_uri parameter is required' 
+      });
+    }
+
+    // Validate authorization code
+    const authorizationCode = await AuthorizationCode.findOne({ code })
+      .populate('client user');
+    
+    if (!authorizationCode) {
+      return res.status(400).json({ 
+        error: 'invalid_grant',
+        error_description: 'Invalid authorization code' 
+      });
+    }
+
+    if (authorizationCode.expiresAt < new Date()) {
+      await AuthorizationCode.deleteOne({ code });
+      return res.status(400).json({ 
+        error: 'invalid_grant',
+        error_description: 'Authorization code has expired' 
+      });
+    }
+
+    // Verify client matches
+    if ((authorizationCode.client as any).clientId !== client.clientId) {
+      return res.status(400).json({ 
+        error: 'invalid_grant',
+        error_description: 'Authorization code was issued to a different client' 
+      });
+    }
+
+    // Verify redirect URI matches
+    if (authorizationCode.redirectUri !== redirect_uri) {
+      return res.status(400).json({ 
+        error: 'invalid_grant',
+        error_description: 'redirect_uri does not match the one used in authorization request' 
+      });
+    }
+
+    // Generate tokens
+    const accessToken = jwt.sign(
+      { 
+        sub: authorizationCode.user._id.toString(),
+        client_id: client.clientId,
+        scope: authorizationCode.scope,
+        iss: ISSUER,
+        aud: client.clientId,
+        iat: Math.floor(Date.now() / 1000),
+        exp: Math.floor(Date.now() / 1000) + 3600, // 1 hour
+        jti: uuidv4() // Unique token identifier
+      },
+      JWT_SECRET,
+      { algorithm: 'HS256' }
+    );
+
+    const refreshToken = jwt.sign(
+      { 
+        sub: authorizationCode.user._id.toString(),
+        client_id: client.clientId,
+        jti: uuidv4()
+      },
+      JWT_REFRESH_SECRET,
+      { expiresIn: '7d', algorithm: 'HS256' }
+    );
+
+    // Generate ID Token (OIDC Core 2.0)
+    const idToken = await this.generateIdToken(
+      authorizationCode.user,
+      client.clientId,
+      authorizationCode.scope,
+      authorizationCode.nonce,
+      authorizationCode.authTime || new Date()
+    );
+
+    const accessTokenExpiresAt = new Date(Date.now() + 3600 * 1000);
+    const refreshTokenExpiresAt = new Date(Date.now() + 7 * 24 * 3600 * 1000);
+
+    // Save tokens
+    const token = new Token({
+      accessToken,
+      accessTokenExpiresAt,
+      refreshToken,
+      refreshTokenExpiresAt,
+      idToken,
+      scope: authorizationCode.scope,
+      client: client._id,
+      user: authorizationCode.user._id,
+      nonce: authorizationCode.nonce,
+      authTime: authorizationCode.authTime || new Date(),
+      amr: ['pwd'] // Password authentication
+    });
+
+    await token.save();
+    await AuthorizationCode.deleteOne({ code });
+
+    // Return response (RFC 6749 Section 5.1)
+    const response: any = {
+      access_token: accessToken,
+      token_type: 'Bearer',
+      expires_in: 3600,
+      refresh_token: refreshToken,
+      id_token: idToken,
+      scope: authorizationCode.scope?.join(' ')
+    };
+
+    return res.json(response);
+  }
+
+  // Handle Refresh Token Grant (RFC 6749 Section 6)
+  private static async handleRefreshTokenGrant(req: Request, res: Response, client: any) {
+    const { refresh_token, scope } = req.body;
+
+    if (!refresh_token) {
+      return res.status(400).json({ 
+        error: 'invalid_request',
+        error_description: 'refresh_token parameter is required' 
+      });
+    }
+
+    // Validate refresh token
+    let tokenDoc;
+    try {
+      // Verify JWT signature first
+      const decoded = jwt.verify(refresh_token, JWT_REFRESH_SECRET) as any;
+      
+      // Check if token exists in database and is not expired
+      tokenDoc = await Token.findOne({ 
+        refreshToken: refresh_token,
+        refreshTokenExpiresAt: { $gt: new Date() }
+      }).populate('user client');
+
+      if (!tokenDoc) {
+        return res.status(400).json({ 
+          error: 'invalid_grant',
+          error_description: 'Invalid or expired refresh token' 
+        });
+      }
+
+      // Verify client matches
+      if ((tokenDoc.client as any).clientId !== client.clientId) {
+        return res.status(400).json({ 
+          error: 'invalid_grant',
+          error_description: 'Refresh token was issued to a different client' 
+        });
+      }
+
+    } catch (error) {
+      return res.status(400).json({ 
+        error: 'invalid_grant',
+        error_description: 'Invalid refresh token' 
+      });
+    }
+
+    // Validate requested scope (RFC 6749 Section 6)
+    let finalScope = tokenDoc.scope;
+    if (scope) {
+      const requestedScopes = (scope as string).split(' ');
+      const invalidScopes = requestedScopes.filter(s => !tokenDoc.scope?.includes(s));
+      
+      if (invalidScopes.length > 0) {
+        return res.status(400).json({ 
+          error: 'invalid_scope',
+          error_description: `Requested scopes not originally granted: ${invalidScopes.join(', ')}` 
+        });
+      }
+      finalScope = requestedScopes;
+    }
+
+    // Generate new access token
+    const newAccessToken = jwt.sign(
+      { 
+        sub: tokenDoc.user._id.toString(),
+        client_id: client.clientId,
+        scope: finalScope,
+        iss: ISSUER,
+        aud: client.clientId,
+        iat: Math.floor(Date.now() / 1000),
+        exp: Math.floor(Date.now() / 1000) + 3600,
+        jti: uuidv4()
+      },
+      JWT_SECRET,
+      { algorithm: 'HS256' }
+    );
+
+    const accessTokenExpiresAt = new Date(Date.now() + 3600 * 1000);
+
+    // Generate new ID token if openid scope is present
+    let newIdToken;
+    if (finalScope?.includes('openid')) {
+      newIdToken = await this.generateIdToken(
+        tokenDoc.user,
+        client.clientId,
+        finalScope,
+        tokenDoc.nonce,
+        tokenDoc.authTime
+      );
+    }
+
+    // Update token document
+    tokenDoc.accessToken = newAccessToken;
+    tokenDoc.accessTokenExpiresAt = accessTokenExpiresAt;
+    if (newIdToken) {
+      tokenDoc.idToken = newIdToken;
+    }
+    if (scope) {
+      tokenDoc.scope = finalScope;
+    }
+    await tokenDoc.save();
+
+    // Prepare response
+    const response: any = {
+      access_token: newAccessToken,
+      token_type: 'Bearer',
+      expires_in: 3600,
+      scope: finalScope?.join(' ')
+    };
+
+    if (newIdToken) {
+      response.id_token = newIdToken;
+    }
+
+    // Only include refresh_token if the client originally received one
+    if (tokenDoc.refreshToken) {
+      response.refresh_token = refresh_token;
+    }
+
+    return res.json(response);
+  }
+
+  // Generate OIDC Compliant ID Token (OIDC Core 2.0 Section 2)
+  private static async generateIdToken(
+    user: any, 
+    clientId: string, 
+    scope: string[] = [], 
+    nonce?: string,
+    authTime?: Date
+  ): Promise<string> {
+    const signingKey = await AuthController.getSigningKey();
+    const privateKey = await jose.importJWK(JSON.parse(signingKey.privateKey), 'RS256');
+
+    // Base claims (OIDC Core 2.0 Section 5.1)
+    const baseClaims = {
+      iss: ISSUER,
+      sub: user._id.toString(),
+      aud: clientId,
+      exp: Math.floor(Date.now() / 1000) + 3600, // 1 hour
+      iat: Math.floor(Date.now() / 1000),
+      auth_time: Math.floor((authTime || new Date()).getTime() / 1000),
+      nonce: nonce
+    };
+
+    // Additional claims based on scope
+    const additionalClaims: any = {};
+    
+    if (scope.includes('profile')) {
+      additionalClaims.name = user.name;
+      additionalClaims.given_name = user.name.split(' ')[0];
+      additionalClaims.family_name = user.name.split(' ').slice(1).join(' ');
+      additionalClaims.preferred_username = user.email.split('@')[0];
+      additionalClaims.updated_at = Math.floor(user.updatedAt.getTime() / 1000);
+    }
+
+    if (scope.includes('email')) {
+      additionalClaims.email = user.email;
+      additionalClaims.email_verified = user.isVerified;
+    }
+
+    // Create JWT
+    const idToken = await new jose.SignJWT({ ...baseClaims, ...additionalClaims })
+      .setProtectedHeader({ 
+        alg: 'RS256', 
+        kid: signingKey.kid,
+        typ: 'JWT'
+      })
+      .setIssuer(ISSUER)
+      .setSubject(user._id.toString())
+      .setAudience(clientId)
+      .setExpirationTime('1h')
+      .setIssuedAt()
+      .setJti(uuidv4())
+      .sign(privateKey);
+
+    return idToken;
+  }
+
+  // Token Introspection Endpoint (RFC 7662)
+  static async introspect(req: Request, res: Response) {
+    try {
+      const { token, token_type_hint } = req.body;
+
+      if (!token) {
+        return res.status(400).json({ 
+          error: 'invalid_request',
+          error_description: 'token parameter is required' 
+        });
+      }
+
+      // Client authentication (same as token endpoint)
+      let client: any;
+      if (req.headers.authorization && req.headers.authorization.startsWith('Basic ')) {
+        const base64Credentials = req.headers.authorization.split(' ')[1];
+        const credentials = Buffer.from(base64Credentials, 'base64').toString('ascii');
+        const [providedClientId, providedClientSecret] = credentials.split(':');
+        
+        client = await Client.findOne({ 
+          clientId: providedClientId, 
+          clientSecret: providedClientSecret 
+        });
+      }
+
+      if (!client) {
+        return res.status(401).json({ 
+          error: 'invalid_client',
+          error_description: 'Client authentication failed' 
+        });
+      }
+
+      // Try to find the token
+      let tokenDoc = await Token.findOne({ 
+        $or: [
+          { accessToken: token },
+          { refreshToken: token }
+        ]
+      }).populate('user client');
+
+      let active = false;
+      let response: any = { active };
+
+      if (tokenDoc) {
+        const now = new Date();
+        const isAccessToken = tokenDoc.accessToken === token;
+        const isRefreshToken = tokenDoc.refreshToken === token;
+        
+        if ((isAccessToken && tokenDoc.accessTokenExpiresAt > now) ||
+            (isRefreshToken && tokenDoc.refreshTokenExpiresAt && tokenDoc.refreshTokenExpiresAt > now)) {
+          active = true;
+          
+          response = {
+            active: true,
+            client_id: (tokenDoc.client as any).clientId,
+            exp: Math.floor((isAccessToken ? tokenDoc.accessTokenExpiresAt : tokenDoc.refreshTokenExpiresAt)!.getTime() / 1000),
+            iat: Math.floor(tokenDoc.createdAt.getTime() / 1000),
+            sub: tokenDoc.user._id.toString(),
+            iss: ISSUER,
+            token_type: isAccessToken ? 'access_token' : 'refresh_token',
+            scope: tokenDoc.scope?.join(' '),
+            auth_time: Math.floor(tokenDoc.authTime.getTime() / 1000)
+          };
+        }
+      }
+
+      return res.json(response);
+
+    } catch (error) {
+      console.error('Introspection error:', error);
+      return res.status(500).json({ 
+        error: 'server_error',
+        error_description: 'Internal server error' 
+      });
+    }
+  }
+
+  // Token Revocation Endpoint (RFC 7009)
+  static async revoke(req: Request, res: Response) {
+    try {
+      const { token, token_type_hint } = req.body;
+
+      if (!token) {
+        return res.status(400).json({ 
+          error: 'invalid_request',
+          error_description: 'token parameter is required' 
+        });
+      }
+
+      // Client authentication
+      let client: any;
+      if (req.headers.authorization && req.headers.authorization.startsWith('Basic ')) {
+        const base64Credentials = req.headers.authorization.split(' ')[1];
+        const credentials = Buffer.from(base64Credentials, 'base64').toString('ascii');
+        const [providedClientId, providedClientSecret] = credentials.split(':');
+        
+        client = await Client.findOne({ 
+          clientId: providedClientId, 
+          clientSecret: providedClientSecret 
+        });
+      }
+
+      if (!client) {
+        return res.status(401).json({ 
+          error: 'invalid_client',
+          error_description: 'Client authentication failed' 
+        });
+      }
+
+      // Find and revoke the token
+      const tokenDoc = await Token.findOne({
+        $or: [
+          { accessToken: token, client: client._id },
+          { refreshToken: token, client: client._id }
+        ]
+      });
+
+      if (tokenDoc) {
+        if (tokenDoc.accessToken === token) {
+          tokenDoc.accessTokenExpiresAt = new Date(0); // Set to expired
+        } else if (tokenDoc.refreshToken === token) {
+          tokenDoc.refreshTokenExpiresAt = new Date(0);
+        }
+        await tokenDoc.save();
+      }
+
+      // Always return 200 OK as per RFC 7009
+      return res.status(200).end();
+
+    } catch (error) {
+      console.error('Revocation error:', error);
+      return res.status(500).json({ 
+        error: 'server_error',
+        error_description: 'Internal server error' 
+      });
+    }
+  }
+
 
   // User info endpoint (updated for OIDC)
   static async userInfo(req: Request, res: Response) {
@@ -491,31 +803,54 @@ static async completeAuthentication(req: Request, res: Response) {
       return res.status(500).json({ error: 'server_error', error_description: 'Internal server error' });
     }
   }
-
-  // OpenID Connect Discovery endpoint
   static async discovery(req: Request, res: Response) {
     try {
       const discovery = {
+        // OIDC Core 1.0 required
         issuer: ISSUER,
         authorization_endpoint: `${ISSUER}/oauth/authorize`,
         token_endpoint: `${ISSUER}/oauth/token`,
         userinfo_endpoint: `${ISSUER}/oauth/userinfo`,
         jwks_uri: `${ISSUER}/oauth/jwks`,
-        end_session_endpoint: `${ISSUER}/oauth/logout`,
-        revocation_endpoint: `${ISSUER}/oauth/revoke`,
+        
+        // OIDC Core 1.0 recommended
         scopes_supported: ['openid', 'profile', 'email', 'offline_access'],
         response_types_supported: ['code'],
+        response_modes_supported: ['query', 'fragment'],
         grant_types_supported: ['authorization_code', 'refresh_token'],
         subject_types_supported: ['public'],
         id_token_signing_alg_values_supported: ['RS256'],
-        token_endpoint_auth_methods_supported: ['client_secret_post'],
-        claims_supported: ['sub', 'name', 'given_name', 'family_name', 'email', 'email_verified']
+        token_endpoint_auth_methods_supported: ['client_secret_basic', 'client_secret_post'],
+        claims_supported: ['sub', 'name', 'given_name', 'family_name', 'email', 'email_verified'],
+        
+        // OIDC Session Management 1.0
+        end_session_endpoint: `${ISSUER}/oauth/logout`,
+        check_session_iframe: `${ISSUER}/oauth/session-check`,
+        
+        // OAuth 2.0 Token Introspection (RFC 7662)
+        introspection_endpoint: `${ISSUER}/oauth/introspect`,
+        
+        // OAuth 2.0 Token Revocation (RFC 7009)
+        revocation_endpoint: `${ISSUER}/oauth/revoke`,
+        
+        // Additional OIDC features
+        claims_parameter_supported: true,
+        request_parameter_supported: false,
+        request_uri_parameter_supported: false,
+        require_request_uri_registration: false,
+        
+        // Token characteristics
+        access_token_signing_alg_values_supported: ['HS256'],
+        token_endpoint_auth_signing_alg_values_supported: ['HS256']
       };
       
       return res.json(discovery);
     } catch (error) {
       console.error('Discovery error:', error);
-      return res.status(500).json({ error: 'server_error', error_description: 'Internal server error' });
+      return res.status(500).json({ 
+        error: 'server_error',
+        error_description: 'Internal server error' 
+      });
     }
   }
 

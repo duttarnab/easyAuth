@@ -8,7 +8,7 @@ export interface IClient extends Document {
   redirectUris: string[];
   grants: string[];
   scope?: string[];
-  user: mongoose.Types.ObjectId;
+  user?: mongoose.Types.ObjectId;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -44,7 +44,7 @@ const ClientSchema: Schema = new Schema({
   user: {
     type: Schema.Types.ObjectId,
     ref: 'User',
-    required: true
+    required: false
   }
 }, {
   timestamps: true

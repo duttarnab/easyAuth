@@ -5,7 +5,8 @@
   "main": "dist/app.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "build": "tsc",
+    "build": "tsc && npm run copy-views",
+    "copy-views": "copyfiles -u 1 src/views/**/* dist",
     "start": "node dist/app.js",
     "dev": "ts-node src/app.ts"
   },
@@ -14,10 +15,12 @@
   "devDependencies": {
     "@types/bcrypt": "^6.0.0",
     "@types/cors": "^2.8.19",
+    "@types/ejs": "^3.1.5",
     "@types/express": "^5.0.3",
     "@types/express-session": "^1.18.2",
     "@types/jsonwebtoken": "^9.0.10",
-    "@types/node": "^24.3.1",
+    "@types/node": "^24.3.3",
+    "copyfiles": "^2.4.1",
     "eslint": "^9.35.0",
     "prettier": "^3.6.2",
     "ts-node": "^10.9.2",
@@ -25,7 +28,6 @@
     "typescript": "^5.9.2"
   },
   "dependencies": {
-    "@types/ejs": "^3.1.5",
     "bcrypt": "^6.0.0",
     "cors": "^2.8.5",
     "dotenv": "^17.2.2",
