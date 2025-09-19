@@ -5,10 +5,10 @@ import { authenticateToken } from '../middleware/auth';
 const router = Router();
 
 // Public routes
-router.post('/register', UserController.register);
+//router.post('/register', UserController.register);
 
 // Protected routes
 router.get('/profile', authenticateToken, UserController.getProfile);
-router.put('/profile', authenticateToken, UserController.updateProfile);
+//router.put('/profile', authenticateToken, UserController.updateProfile);
 
 export default router;
