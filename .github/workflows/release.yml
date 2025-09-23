@@ -1,0 +1,93 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+jobs:
+  build-server:
+    name: Build server
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Use Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: server/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: Build
+        run: npm run build
+      - name: Package artifact
+        run: |
+          mkdir -p ../artifacts/server
+          cp -r dist package.json package-lock.json README.md Dockerfile ../artifacts/server/ 2>/dev/null || true
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: server-dist
+          path: artifacts/server
+
+  build-scim:
+    name: Build scim
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: scim
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Use Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: scim/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: Build
+        run: npm run build
+      - name: Package artifact
+        run: |
+          mkdir -p ../artifacts/scim
+          cp -r dist package.json package-lock.json README.md Dockerfile ../artifacts/scim/ 2>/dev/null || true
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: scim-dist
+          path: artifacts/scim
+
+  release:
+    name: Create GitHub Release
+    needs: [build-server, build-scim]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download server artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: server-dist
+          path: server-dist
+      - name: Download scim artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: scim-dist
+          path: scim-dist
+      - name: Zip artifacts
+        run: |
+          zip -r server-dist.zip server-dist
+          zip -r scim-dist.zip scim-dist
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            server-dist.zip
+            scim-dist.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
