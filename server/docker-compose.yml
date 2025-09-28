@@ -1,0 +1,29 @@
+version: "3.9"
+
+services:
+  app:
+    build: .
+    container_name: openid-server
+    ports:
+      - "3000:3000"
+    environment:
+      - PORT=3000
+      - NODE_ENV=production
+      - MONGODB_URI=mongodb://mongodb:27017/oauth-server
+      - CLIENT_URL=http://localhost:3001
+      - UI_BASE_URL=http://localhost:3001
+      - SESSION_SECRET=your-session-secret
+    depends_on:
+      - mongo
+
+  mongo:
+    image: mongo:latest
+    container_name: mongodb
+    restart: always
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo-data:/data/db
+
+volumes:
+  mongo-data:
